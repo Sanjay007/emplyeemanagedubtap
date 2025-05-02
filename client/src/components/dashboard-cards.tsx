@@ -3,40 +3,101 @@ import { User, GitBranch, UserRound, Users } from "lucide-react";
 
 interface DashboardCardsProps {
   employees: Employee[];
+  currentUser?: Employee;
 }
 
-export default function DashboardCards({ employees }: DashboardCardsProps) {
-  // Filter employees by role
-  const managers = employees.filter(emp => emp.userType === USER_ROLES.MANAGER);
-  const bdms = employees.filter(emp => emp.userType === USER_ROLES.BDM);
-  const bdes = employees.filter(emp => emp.userType === USER_ROLES.BDE);
+export default function DashboardCards({ employees, currentUser }: DashboardCardsProps) {
+  // Use the provided current user
   
-  const cards = [
-    {
-      title: "Total Employees",
-      count: employees.length,
-      icon: <User className="text-xl text-primary" />,
-      bgColor: "bg-primary-100",
-    },
-    {
-      title: "Managers",
-      count: managers.length,
-      icon: <Users className="text-xl text-indigo-600" />,
-      bgColor: "bg-indigo-100",
-    },
-    {
-      title: "BDMs",
-      count: bdms.length,
-      icon: <GitBranch className="text-xl text-green-600" />,
-      bgColor: "bg-green-100",
-    },
-    {
-      title: "BDEs",
-      count: bdes.length,
-      icon: <UserRound className="text-xl text-amber-600" />,
-      bgColor: "bg-amber-100",
-    },
-  ];
+  // Filter employees by role - filter based on hierarchy
+  const allManagers = employees.filter(emp => emp.userType === USER_ROLES.MANAGER);
+  const allBdms = employees.filter(emp => emp.userType === USER_ROLES.BDM);
+  const allBdes = employees.filter(emp => emp.userType === USER_ROLES.BDE);
+  
+  // For Manager: Show only BDMs under them and BDEs under those BDMs
+  const bdmsUnderManager = currentUser?.userType === USER_ROLES.MANAGER 
+    ? allBdms.filter(bdm => bdm.managerId === currentUser.id)
+    : allBdms;
+  
+  // For Manager or BDM: Show only BDEs under the appropriate BDMs
+  let bdesFiltered = allBdes;
+  if (currentUser?.userType === USER_ROLES.MANAGER) {
+    // Get BDEs under BDMs who report to this manager
+    const bdmIds = bdmsUnderManager.map(bdm => bdm.id);
+    bdesFiltered = allBdes.filter(bde => bdmIds.includes(bde.bdmId || -1));
+  } else if (currentUser?.userType === USER_ROLES.BDM) {
+    // Get BDEs who directly report to this BDM
+    bdesFiltered = allBdes.filter(bde => bde.bdmId === currentUser.id);
+  }
+  
+  // Customize cards based on user role
+  let cards = [];
+  
+  if (currentUser?.userType === USER_ROLES.ADMIN) {
+    // Admin sees all counts
+    cards = [
+      {
+        title: "Total Employees",
+        count: employees.length,
+        icon: <User className="text-xl text-primary" />,
+        bgColor: "bg-primary-100",
+      },
+      {
+        title: "Managers",
+        count: allManagers.length,
+        icon: <Users className="text-xl text-indigo-600" />,
+        bgColor: "bg-indigo-100",
+      },
+      {
+        title: "BDMs",
+        count: allBdms.length,
+        icon: <GitBranch className="text-xl text-green-600" />,
+        bgColor: "bg-green-100",
+      },
+      {
+        title: "BDEs",
+        count: allBdes.length,
+        icon: <UserRound className="text-xl text-amber-600" />,
+        bgColor: "bg-amber-100",
+      },
+    ];
+  } else if (currentUser?.userType === USER_ROLES.MANAGER) {
+    // Manager sees BDMs under them and BDEs under those BDMs
+    cards = [
+      {
+        title: "BDMs",
+        count: bdmsUnderManager.length,
+        icon: <GitBranch className="text-xl text-green-600" />,
+        bgColor: "bg-green-100",
+      },
+      {
+        title: "BDEs",
+        count: bdesFiltered.length,
+        icon: <UserRound className="text-xl text-amber-600" />,
+        bgColor: "bg-amber-100",
+      },
+    ];
+  } else if (currentUser?.userType === USER_ROLES.BDM) {
+    // BDM sees only BDEs under them
+    cards = [
+      {
+        title: "BDEs",
+        count: bdesFiltered.length,
+        icon: <UserRound className="text-xl text-amber-600" />,
+        bgColor: "bg-amber-100",
+      },
+    ];
+  } else {
+    // Default (BDE or no user) - just show total employees
+    cards = [
+      {
+        title: "Total Employees",
+        count: employees.length,
+        icon: <User className="text-xl text-primary" />,
+        bgColor: "bg-primary-100",
+      },
+    ];
+  }
 
   return (
     <div className="mb-6">

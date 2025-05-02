@@ -116,20 +116,23 @@ export default function EmployeeForm({
         throw new Error("Username and password are required for new employees");
       }
       
-      await apiRequest("POST", "/api/register", {
-        username: data.username,
-        password: data.password,
-        name: data.name,
-        mobile: data.mobile,
-        jobLocation: data.jobLocation,
-        userType: data.userType,
-        salary: data.salary,
-        joiningDate: data.joiningDate,
-        travelAllowance: data.travelAllowance,
-        referralName: data.referralName,
-        remarks: data.remarks,
-        managerId: data.managerId,
-        bdmId: data.bdmId,
+      await apiRequest("/api/register", {
+        method: "POST",
+        body: JSON.stringify({
+          username: data.username,
+          password: data.password,
+          name: data.name,
+          mobile: data.mobile,
+          jobLocation: data.jobLocation,
+          userType: data.userType,
+          salary: data.salary,
+          joiningDate: data.joiningDate,
+          travelAllowance: data.travelAllowance,
+          referralName: data.referralName,
+          remarks: data.remarks,
+          managerId: data.managerId,
+          bdmId: data.bdmId,
+        })
       });
       
       // If bank details are provided, create them too
@@ -160,27 +163,33 @@ export default function EmployeeForm({
     mutationFn: async (data: EmployeeFormValues) => {
       if (!employee) return;
       
-      await apiRequest("PUT", `/api/employees/${employee.id}`, {
-        name: data.name,
-        mobile: data.mobile,
-        jobLocation: data.jobLocation,
-        userType: data.userType,
-        salary: data.salary,
-        joiningDate: data.joiningDate,
-        travelAllowance: data.travelAllowance,
-        referralName: data.referralName,
-        remarks: data.remarks,
-        managerId: data.managerId,
-        bdmId: data.bdmId,
+      await apiRequest(`/api/employees/${employee.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: data.name,
+          mobile: data.mobile,
+          jobLocation: data.jobLocation,
+          userType: data.userType,
+          salary: data.salary,
+          joiningDate: data.joiningDate,
+          travelAllowance: data.travelAllowance,
+          referralName: data.referralName,
+          remarks: data.remarks,
+          managerId: data.managerId,
+          bdmId: data.bdmId,
+        })
       });
       
       // Update bank details if they are provided
       if (data.bankName && data.ifscCode && data.accountNumber) {
-        await apiRequest("POST", "/api/bank-details", {
-          employeeId: employee.id,
-          bankName: data.bankName,
-          ifscCode: data.ifscCode,
-          accountNumber: data.accountNumber,
+        await apiRequest("/api/bank-details", {
+          method: "POST",
+          body: JSON.stringify({
+            employeeId: employee.id,
+            bankName: data.bankName,
+            ifscCode: data.ifscCode,
+            accountNumber: data.accountNumber,
+          })
         });
       }
     },
