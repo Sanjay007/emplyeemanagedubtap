@@ -23,11 +23,79 @@ import {
   EmployeeDocument
 } from "@shared/schema";
 
+// Helper function to check if a BDE is under a BDM
+async function isBdeUnderBdm(bdeId: number, bdmId: number): Promise<boolean> {
+  const bde = await storage.getUser(bdeId);
+  return !!bde && bde.bdmId === bdmId;
+}
+
+// Helper function to enrich reports with BDE and BDM information
+async function enrichReportWithEmployeeInfo(report: any): Promise<any> {
+  if (!report || !report.bdeId) return report;
+  
+  const bde = await storage.getUser(report.bdeId);
+  if (!bde) return report;
+  
+  const { password: bdePwd, ...bdeInfo } = bde;
+  let bdmInfo = null;
+  
+  if (bde.bdmId) {
+    const bdm = await storage.getUser(bde.bdmId);
+    if (bdm) {
+      const { password: bdmPwd, ...bdmData } = bdm;
+      bdmInfo = bdmData;
+    }
+  }
+  
+  return {
+    ...report,
+    bdeInfo,
+    bdmInfo
+  };
+}
+
+// Helper function to enrich a list of reports with employee information
+async function enrichReportsWithEmployeeInfo(reports: any[]): Promise<any[]> {
+  return Promise.all(reports.map(report => enrichReportWithEmployeeInfo(report)));
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Sets up /api/register, /api/login, /api/logout, /api/user
   setupAuth(app);
 
   // API endpoints for employee management
+  
+  // Get all BDEs assigned to a specific BDM
+  app.get("/api/employees/bdm/:bdmId", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      
+      const bdmId = parseInt(req.params.bdmId);
+      if (isNaN(bdmId)) {
+        return res.status(400).json({ error: "Invalid BDM ID" });
+      }
+      
+      const user = req.user as Employee;
+      
+      // Only admins, managers, or the BDM themselves can view their BDEs
+      if (
+        user.id !== bdmId && 
+        user.userType !== USER_ROLES.ADMIN && 
+        user.userType !== USER_ROLES.MANAGER
+      ) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+      
+      const bdes = await storage.getUsersByBDM(bdmId);
+      
+      res.json(bdes.filter(bde => bde.userType === USER_ROLES.BDE));
+    } catch (error) {
+      console.error("Error fetching BDEs by BDM:", error);
+      res.status(500).json({ error: "Failed to fetch BDEs" });
+    }
+  });
   
   // Change user password
   app.post("/api/user/change-password", async (req, res) => {
@@ -1055,7 +1123,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         salesReports = await storage.getSalesByLocation(location as string);
       }
       
-      res.status(200).json(salesReports);
+      // Enrich sales reports with BDE and BDM information
+      const enrichedReports = await enrichReportsWithEmployeeInfo(salesReports);
+      
+      res.status(200).json(enrichedReports);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch sales reports" });
     }
@@ -1260,7 +1331,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         reports = searchResults.filter(r => reportIds.has(r.id));
       }
       
-      res.status(200).json(reports);
+      // Enrich verification reports with BDE and BDM information
+      const enrichedReports = await enrichReportsWithEmployeeInfo(reports);
+      
+      res.status(200).json(enrichedReports);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch verification reports" });
     }
@@ -1290,7 +1364,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: "You don't have permission to access this report" });
       }
       
-      res.status(200).json(report);
+      // Enrich report with BDE and BDM information
+      const enrichedReport = await enrichReportWithEmployeeInfo(report);
+      
+      res.status(200).json(enrichedReport);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch verification report" });
     }
@@ -1310,7 +1387,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const pendingReports = await storage.getPendingVerificationReports();
-      res.status(200).json(pendingReports);
+      
+      // Enrich pending reports with BDE and BDM information
+      const enrichedReports = await enrichReportsWithEmployeeInfo(pendingReports);
+      
+      res.status(200).json(enrichedReports);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch pending verification reports" });
     }
@@ -1385,7 +1466,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Verification report not found" });
       }
       
-      res.status(200).json(approvedReport);
+      // Enrich the approved report with BDE and BDM information
+      const enrichedReport = await enrichReportWithEmployeeInfo(approvedReport);
+      
+      res.status(200).json(enrichedReport);
     } catch (error) {
       res.status(500).json({ error: "Failed to approve verification report" });
     }
@@ -1417,7 +1501,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Verification report not found" });
       }
       
-      res.status(200).json(rejectedReport);
+      // Enrich the rejected report with BDE and BDM information
+      const enrichedReport = await enrichReportWithEmployeeInfo(rejectedReport);
+      
+      res.status(200).json(enrichedReport);
     } catch (error) {
       res.status(500).json({ error: "Failed to reject verification report" });
     }

@@ -31,21 +31,32 @@ import session from "express-session";
 import createMemoryStore from "memorystore";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
+import connectPg from "connect-pg-simple";
+import { db, pool } from "./db";
+import { eq, and, or, gte, lte, like, ilike, inArray, sql } from "drizzle-orm";
 
 const MemoryStore = createMemoryStore(session);
+const PostgresSessionStore = connectPg(session);
 const scryptAsync = promisify(scrypt);
 
-async function hashPassword(password: string) {
+export async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
   const buf = (await scryptAsync(password, salt, 64)) as Buffer;
   return `${buf.toString("hex")}.${salt}`;
+}
+
+export async function comparePasswords(supplied: string, stored: string) {
+  const [hashed, salt] = stored.split(".");
+  const hashedBuf = Buffer.from(hashed, "hex");
+  const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
+  return timingSafeEqual(hashedBuf, suppliedBuf);
 }
 
 // modify the interface with any CRUD methods
 // you might need
 export interface IStorage {
   // Session store
-  sessionStore: any; // Using any to avoid SessionStore type issues
+  sessionStore: session.Store; 
   
   // User/Employee methods
   getUser(id: number): Promise<Employee | undefined>;
@@ -141,1013 +152,1262 @@ export interface IStorage {
   searchEmployees(query: string): Promise<Employee[]>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<number, Employee>;
-  private bankDetailsMap: Map<number, BankDetail>;
-  private attendanceMap: Map<number, AttendanceRecord>;
-  private visitReportsMap: Map<number, VisitReport>;
-  private productsMap: Map<number, Product>;
-  private salesReportsMap: Map<number, SalesReport>;
-  private verificationReportsMap: Map<number, VerificationReport>;
-  private employeeDocumentsMap: Map<number, EmployeeDocument>;
-  private currentUserId: number;
-  private currentBankDetailId: number;
-  private currentAttendanceId: number;
-  private currentVisitReportId: number;
-  private currentProductId: number;
-  private currentSalesReportId: number;
-  private currentVerificationReportId: number;
-  private currentEmployeeDocumentId: number;
-  public sessionStore: any; // Using any to avoid SessionStore type issues
+export class DatabaseStorage implements IStorage {
+  sessionStore: session.Store;
 
   constructor() {
-    this.users = new Map();
-    this.bankDetailsMap = new Map();
-    this.attendanceMap = new Map();
-    this.visitReportsMap = new Map();
-    this.productsMap = new Map();
-    this.salesReportsMap = new Map();
-    this.verificationReportsMap = new Map();
-    this.employeeDocumentsMap = new Map();
-    this.currentUserId = 1;
-    this.currentBankDetailId = 1;
-    this.currentAttendanceId = 1;
-    this.currentVisitReportId = 1;
-    this.currentProductId = 1;
-    this.currentSalesReportId = 1;
-    this.currentVerificationReportId = 1;
-    this.currentEmployeeDocumentId = 1;
-    this.sessionStore = new MemoryStore({
-      checkPeriod: 86400000, // prune expired entries every 24h
+    this.sessionStore = new PostgresSessionStore({ 
+      pool, 
+      createTableIfMissing: true 
     });
-    
-    // Create the admin user and sample users with hashed password
-    this.initUsers();
-    // Initialize default products
-    this.initProducts();
-  }
-  
-  private initProducts() {
-    // Initialize default products with their points
-    const defaultProducts: InsertProduct[] = [
-      { name: "Merchant", points: 2 },
-      { name: "Soundbox", points: 2 },
-      { name: "Android Swipe Machine", points: 6 },
-      { name: "Android Printer Swipe Machine", points: 10 },
-      { name: "Distributor", points: 15 },
-      { name: "mATM", points: 4 }
-    ];
-    
-    defaultProducts.forEach(product => {
-      const id = this.currentProductId++;
-      this.productsMap.set(id, {
-        ...product,
-        id,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-    });
-  }
-  
-  private async initUsers() {
-    // Create admin user
-    await this.initAdminUser();
-    
-    // Create a sample manager
-    const managerPassword = await hashPassword("manager123");
-    const manager: Employee = {
-      id: this.currentUserId++,
-      name: "Sample Manager",
-      mobile: "9876543211",
-      jobLocation: "Delhi",
-      userType: USER_ROLES.MANAGER,
-      salary: 80000,
-      joiningDate: new Date().toISOString(),
-      travelAllowance: 8000,
-      referralName: "",
-      remarks: "Sample manager account",
-      username: "manager",
-      password: managerPassword,
-      employeeId: "M1",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      managerId: null,
-      bdmId: null
-    };
-    this.users.set(manager.id, manager);
-    
-    // Create a sample BDM under the manager
-    const bdmPassword = await hashPassword("bdm123");
-    const bdm: Employee = {
-      id: this.currentUserId++,
-      name: "Sample BDM",
-      mobile: "9876543212",
-      jobLocation: "Mumbai",
-      userType: USER_ROLES.BDM,
-      salary: 60000,
-      joiningDate: new Date().toISOString(),
-      travelAllowance: 6000,
-      referralName: "",
-      remarks: "Sample BDM account",
-      username: "bdm",
-      password: bdmPassword,
-      employeeId: "BDM1",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      managerId: manager.id,
-      bdmId: null
-    };
-    this.users.set(bdm.id, bdm);
-    
-    // Create a sample BDE under the BDM
-    const bdePassword = await hashPassword("bde123");
-    const bde: Employee = {
-      id: this.currentUserId++,
-      name: "Sample BDE",
-      mobile: "9876543213",
-      jobLocation: "Bangalore",
-      userType: USER_ROLES.BDE,
-      salary: 40000,
-      joiningDate: new Date().toISOString(),
-      travelAllowance: 4000,
-      referralName: "",
-      remarks: "Sample BDE account",
-      username: "bde",
-      password: bdePassword,
-      employeeId: "BDE1",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      managerId: manager.id,
-      bdmId: bdm.id
-    };
-    this.users.set(bde.id, bde);
-  }
-  
-  private async initAdminUser() {
-    const hashedPassword = await hashPassword("admin123");
-    const adminUser: Employee = {
-      id: this.currentUserId++,
-      name: "Admin User",
-      mobile: "9876543210",
-      jobLocation: "Headquarters",
-      userType: USER_ROLES.ADMIN,
-      salary: 100000,
-      joiningDate: new Date().toISOString(),
-      travelAllowance: 10000,
-      referralName: "",
-      remarks: "Default admin account",
-      username: "admin",
-      password: hashedPassword,
-      employeeId: "AD1",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      managerId: null,
-      bdmId: null
-    };
-    
-    this.users.set(adminUser.id, adminUser);
   }
 
   // User/Employee methods
   async getUser(id: number): Promise<Employee | undefined> {
-    return this.users.get(id);
+    try {
+      const [user] = await db.select().from(employees).where(eq(employees.id, id));
+      return user;
+    } catch (error) {
+      console.error("Error getting user by ID:", error);
+      throw error;
+    }
   }
 
   async getUserByUsername(username: string): Promise<Employee | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username
-    );
+    try {
+      const [user] = await db.select().from(employees).where(eq(employees.username, username));
+      return user;
+    } catch (error) {
+      console.error("Error getting user by username:", error);
+      throw error;
+    }
   }
 
   async createUser(user: InsertEmployee, employeeId: string): Promise<Employee> {
-    const id = this.currentUserId++;
-    const newUser: Employee = { 
-      ...user, 
-      id, 
-      employeeId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      managerId: user.managerId || null,
-      bdmId: user.bdmId || null
-    };
-    this.users.set(id, newUser);
-    return newUser;
+    try {
+      const [newUser] = await db
+        .insert(employees)
+        .values({
+          ...user,
+          employeeId
+        })
+        .returning();
+      return newUser;
+    } catch (error) {
+      console.error("Error creating user:", error);
+      throw error;
+    }
   }
 
   async getAllUsers(): Promise<Employee[]> {
-    return Array.from(this.users.values());
+    try {
+      return await db.select().from(employees);
+    } catch (error) {
+      console.error("Error getting all users:", error);
+      throw error;
+    }
   }
 
   async updateUser(id: number, userData: Partial<InsertEmployee>): Promise<Employee | undefined> {
-    const user = this.users.get(id);
-    if (!user) return undefined;
-    
-    const updatedUser: Employee = {
-      ...user,
-      ...userData,
-      updatedAt: new Date()
-    };
-    
-    this.users.set(id, updatedUser);
-    return updatedUser;
+    try {
+      const [updatedUser] = await db
+        .update(employees)
+        .set({ ...userData, updatedAt: new Date() })
+        .where(eq(employees.id, id))
+        .returning();
+      return updatedUser;
+    } catch (error) {
+      console.error("Error updating user:", error);
+      throw error;
+    }
   }
 
   async deleteUser(id: number): Promise<boolean> {
-    return this.users.delete(id);
+    try {
+      await db.delete(employees).where(eq(employees.id, id));
+      return true;
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      throw error;
+    }
   }
 
   // Bank details methods
   async getBankDetails(employeeId: number): Promise<BankDetail | undefined> {
-    return Array.from(this.bankDetailsMap.values()).find(
-      (detail) => detail.employeeId === employeeId
-    );
+    try {
+      const [details] = await db
+        .select()
+        .from(bankDetails)
+        .where(eq(bankDetails.employeeId, employeeId));
+      return details;
+    } catch (error) {
+      console.error("Error getting bank details:", error);
+      throw error;
+    }
   }
 
   async createBankDetails(details: InsertBankDetail): Promise<BankDetail> {
-    const id = this.currentBankDetailId++;
-    const newBankDetails: BankDetail = {
-      ...details,
-      id,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.bankDetailsMap.set(id, newBankDetails);
-    return newBankDetails;
+    try {
+      const [newDetails] = await db
+        .insert(bankDetails)
+        .values(details)
+        .returning();
+      return newDetails;
+    } catch (error) {
+      console.error("Error creating bank details:", error);
+      throw error;
+    }
   }
 
   async updateBankDetails(id: number, details: Partial<InsertBankDetail>): Promise<BankDetail | undefined> {
-    const bankDetail = this.bankDetailsMap.get(id);
-    if (!bankDetail) return undefined;
-    
-    const updatedBankDetail: BankDetail = {
-      ...bankDetail,
-      ...details,
-      updatedAt: new Date()
-    };
-    
-    this.bankDetailsMap.set(id, updatedBankDetail);
-    return updatedBankDetail;
+    try {
+      const [updatedDetails] = await db
+        .update(bankDetails)
+        .set({ ...details, updatedAt: new Date() })
+        .where(eq(bankDetails.id, id))
+        .returning();
+      return updatedDetails;
+    } catch (error) {
+      console.error("Error updating bank details:", error);
+      throw error;
+    }
   }
 
   // Hierarchy methods
   async getUsersByManager(managerId: number): Promise<Employee[]> {
-    return Array.from(this.users.values()).filter(
-      (user) => user.managerId === managerId
-    );
+    try {
+      return await db
+        .select()
+        .from(employees)
+        .where(eq(employees.managerId, managerId));
+    } catch (error) {
+      console.error("Error getting users by manager:", error);
+      throw error;
+    }
   }
 
   async getUsersByBDM(bdmId: number): Promise<Employee[]> {
-    return Array.from(this.users.values()).filter(
-      (user) => user.bdmId === bdmId
-    );
+    try {
+      return await db
+        .select()
+        .from(employees)
+        .where(eq(employees.bdmId, bdmId));
+    } catch (error) {
+      console.error("Error getting users by BDM:", error);
+      throw error;
+    }
   }
 
   async assignUserToManager(userId: number, managerId: number): Promise<Employee | undefined> {
-    const user = this.users.get(userId);
-    if (!user) return undefined;
-    
-    // Check if manager exists and is actually a manager
-    const manager = this.users.get(managerId);
-    if (!manager || manager.userType !== USER_ROLES.MANAGER) return undefined;
-    
-    const updatedUser: Employee = {
-      ...user,
-      managerId,
-      bdmId: null, // Reset BDM if assigning directly to manager
-      updatedAt: new Date()
-    };
-    
-    this.users.set(userId, updatedUser);
-    return updatedUser;
+    try {
+      // Check if manager exists
+      const manager = await this.getUser(managerId);
+      if (!manager || manager.userType !== USER_ROLES.MANAGER) {
+        throw new Error("Invalid manager ID or user is not a manager");
+      }
+
+      const [updatedUser] = await db
+        .update(employees)
+        .set({
+          managerId,
+          bdmId: null,
+          updatedAt: new Date()
+        })
+        .where(eq(employees.id, userId))
+        .returning();
+      
+      return updatedUser;
+    } catch (error) {
+      console.error("Error assigning user to manager:", error);
+      throw error;
+    }
   }
 
   async assignUserToBDM(userId: number, bdmId: number): Promise<Employee | undefined> {
-    const user = this.users.get(userId);
-    if (!user) return undefined;
-    
-    // Check if BDM exists and is actually a BDM
-    const bdm = this.users.get(bdmId);
-    if (!bdm || bdm.userType !== USER_ROLES.BDM) return undefined;
-    
-    // BDM should have a manager assigned
-    if (!bdm.managerId) return undefined;
-    
-    const updatedUser: Employee = {
-      ...user,
-      managerId: bdm.managerId,
-      bdmId,
-      updatedAt: new Date()
-    };
-    
-    this.users.set(userId, updatedUser);
-    return updatedUser;
+    try {
+      // Check if BDM exists
+      const bdm = await this.getUser(bdmId);
+      if (!bdm || bdm.userType !== USER_ROLES.BDM) {
+        throw new Error("Invalid BDM ID or user is not a BDM");
+      }
+
+      // BDM should have a manager assigned
+      if (!bdm.managerId) {
+        throw new Error("BDM does not have a manager assigned");
+      }
+
+      const [updatedUser] = await db
+        .update(employees)
+        .set({
+          managerId: bdm.managerId,
+          bdmId,
+          updatedAt: new Date()
+        })
+        .where(eq(employees.id, userId))
+        .returning();
+      
+      return updatedUser;
+    } catch (error) {
+      console.error("Error assigning user to BDM:", error);
+      throw error;
+    }
   }
 
   async removeUserAssignment(userId: number): Promise<Employee | undefined> {
-    const user = this.users.get(userId);
-    if (!user) return undefined;
-    
-    const updatedUser: Employee = {
-      ...user,
-      managerId: null,
-      bdmId: null,
-      updatedAt: new Date()
-    };
-    
-    this.users.set(userId, updatedUser);
-    return updatedUser;
+    try {
+      const [updatedUser] = await db
+        .update(employees)
+        .set({
+          managerId: null,
+          bdmId: null,
+          updatedAt: new Date()
+        })
+        .where(eq(employees.id, userId))
+        .returning();
+      
+      return updatedUser;
+    } catch (error) {
+      console.error("Error removing user assignment:", error);
+      throw error;
+    }
   }
 
   // Get users by role
   async getManagers(): Promise<Employee[]> {
-    return Array.from(this.users.values()).filter(
-      (user) => user.userType === USER_ROLES.MANAGER
-    );
+    try {
+      return await db
+        .select()
+        .from(employees)
+        .where(eq(employees.userType, USER_ROLES.MANAGER));
+    } catch (error) {
+      console.error("Error getting managers:", error);
+      throw error;
+    }
   }
 
   async getBDMs(): Promise<Employee[]> {
-    return Array.from(this.users.values()).filter(
-      (user) => user.userType === USER_ROLES.BDM
-    );
+    try {
+      return await db
+        .select()
+        .from(employees)
+        .where(eq(employees.userType, USER_ROLES.BDM));
+    } catch (error) {
+      console.error("Error getting BDMs:", error);
+      throw error;
+    }
   }
 
   async getBDEs(): Promise<Employee[]> {
-    return Array.from(this.users.values()).filter(
-      (user) => user.userType === USER_ROLES.BDE
-    );
-  }
-  
-  // Attendance methods
-  async recordLogin(employeeId: number): Promise<AttendanceRecord> {
-    const employee = await this.getUser(employeeId);
-    if (!employee) {
-      throw new Error("Employee not found");
+    try {
+      return await db
+        .select()
+        .from(employees)
+        .where(eq(employees.userType, USER_ROLES.BDE));
+    } catch (error) {
+      console.error("Error getting BDEs:", error);
+      throw error;
     }
-    
-    // Check if there's already an active attendance record for today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const existingRecord = Array.from(this.attendanceMap.values()).find(
-      record => record.employeeId === employeeId && 
-                new Date(record.date).getTime() === today.getTime() && 
-                !record.logoutTime
-    );
-    
-    if (existingRecord) {
-      return existingRecord; // User already logged in today
-    }
-    
-    const id = this.currentAttendanceId++;
-    const newRecord: AttendanceRecord = {
-      id,
-      employeeId,
-      loginTime: new Date(),
-      logoutTime: null,
-      date: today,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.attendanceMap.set(id, newRecord);
-    return newRecord;
-  }
-  
-  async recordLogout(employeeId: number): Promise<AttendanceRecord | undefined> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    // Find today's active attendance record
-    const record = Array.from(this.attendanceMap.values()).find(
-      record => record.employeeId === employeeId && 
-                new Date(record.date).getTime() === today.getTime() && 
-                !record.logoutTime
-    );
-    
-    if (!record) {
-      return undefined; // No active attendance record found
-    }
-    
-    const updatedRecord: AttendanceRecord = {
-      ...record,
-      logoutTime: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.attendanceMap.set(record.id, updatedRecord);
-    return updatedRecord;
-  }
-  
-  async getAttendanceByDate(date: Date): Promise<AttendanceRecord[]> {
-    const targetDate = new Date(date);
-    targetDate.setHours(0, 0, 0, 0);
-    
-    return Array.from(this.attendanceMap.values()).filter(
-      record => new Date(record.date).getTime() === targetDate.getTime()
-    );
-  }
-  
-  async getAttendanceByEmployeeId(employeeId: number): Promise<AttendanceRecord[]> {
-    return Array.from(this.attendanceMap.values()).filter(
-      record => record.employeeId === employeeId
-    );
-  }
-  
-  async getAttendanceByDateRange(startDate: Date, endDate: Date): Promise<AttendanceRecord[]> {
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    
-    return Array.from(this.attendanceMap.values()).filter(
-      record => {
-        const recordDate = new Date(record.date);
-        return recordDate >= start && recordDate <= end;
-      }
-    );
-  }
-  
-  async getAttendanceByManagerId(managerId: number, date?: Date): Promise<AttendanceRecord[]> {
-    // Get all employees under this manager
-    const employees = await this.getUsersByManager(managerId);
-    const employeeIds = employees.map(emp => emp.id);
-    
-    // Filter attendance records by employee IDs
-    let records = Array.from(this.attendanceMap.values()).filter(
-      record => employeeIds.includes(record.employeeId)
-    );
-    
-    // If date is provided, filter by date as well
-    if (date) {
-      const targetDate = new Date(date);
-      targetDate.setHours(0, 0, 0, 0);
-      
-      records = records.filter(
-        record => new Date(record.date).getTime() === targetDate.getTime()
-      );
-    }
-    
-    return records;
-  }
-  
-  async getAttendanceByBDMId(bdmId: number, date?: Date): Promise<AttendanceRecord[]> {
-    // Get all employees under this BDM
-    const employees = await this.getUsersByBDM(bdmId);
-    const employeeIds = employees.map(emp => emp.id);
-    
-    // Filter attendance records by employee IDs
-    let records = Array.from(this.attendanceMap.values()).filter(
-      record => employeeIds.includes(record.employeeId)
-    );
-    
-    // If date is provided, filter by date as well
-    if (date) {
-      const targetDate = new Date(date);
-      targetDate.setHours(0, 0, 0, 0);
-      
-      records = records.filter(
-        record => new Date(record.date).getTime() === targetDate.getTime()
-      );
-    }
-    
-    return records;
-  }
-  
-  async getAttendanceForToday(): Promise<AttendanceRecord[]> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    return this.getAttendanceByDate(today);
-  }
-  
-  // Visit Reports methods
-  async createVisitReport(report: InsertVisitReport): Promise<VisitReport> {
-    const id = this.currentVisitReportId++;
-    const newReport: VisitReport = {
-      ...report,
-      id,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.visitReportsMap.set(id, newReport);
-    return newReport;
-  }
-  
-  async getVisitReportById(id: number): Promise<VisitReport | undefined> {
-    return this.visitReportsMap.get(id);
-  }
-  
-  async getVisitReportsByBdeId(bdeId: number): Promise<VisitReport[]> {
-    return Array.from(this.visitReportsMap.values()).filter(
-      report => report.bdeId === bdeId
-    );
-  }
-  
-  async getVisitReportsByBdmId(bdmId: number): Promise<VisitReport[]> {
-    // Get all BDEs under this BDM
-    const bdes = await this.getUsersByBDM(bdmId);
-    const bdeIds = bdes.map(bde => bde.id);
-    
-    // Get all reports from these BDEs
-    return Array.from(this.visitReportsMap.values()).filter(
-      report => bdeIds.includes(report.bdeId)
-    );
-  }
-  
-  async getVisitReportsByManagerId(managerId: number): Promise<VisitReport[]> {
-    // Get all BDEs under managers (directly or via BDMs)
-    const directBdes = await this.getUsersByManager(managerId);
-    const bdms = Array.from(this.users.values()).filter(
-      user => user.managerId === managerId && user.userType === USER_ROLES.BDM
-    );
-    
-    let allBdes = [...directBdes];
-    
-    // Add BDEs under each BDM
-    for (const bdm of bdms) {
-      const bdmBdes = await this.getUsersByBDM(bdm.id);
-      allBdes = [...allBdes, ...bdmBdes];
-    }
-    
-    const bdeIds = allBdes
-      .filter(user => user.userType === USER_ROLES.BDE)
-      .map(bde => bde.id);
-    
-    // Get all reports from these BDEs
-    return Array.from(this.visitReportsMap.values()).filter(
-      report => bdeIds.includes(report.bdeId)
-    );
-  }
-  
-  async getVisitReportsByDateRange(startDate: Date, endDate: Date): Promise<VisitReport[]> {
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    
-    return Array.from(this.visitReportsMap.values()).filter(
-      report => {
-        const reportDate = new Date(report.createdAt);
-        return reportDate >= start && reportDate <= end;
-      }
-    );
-  }
-  
-  async getVisitReportsByLocation(location: string): Promise<VisitReport[]> {
-    const lowercaseSearch = location.toLowerCase();
-    return Array.from(this.visitReportsMap.values()).filter(
-      report => report.location.toLowerCase().includes(lowercaseSearch)
-    );
-  }
-  
-  async getTodayVisitReportCount(bdeId?: number): Promise<number> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    let reports = await this.getVisitReportsByDateRange(today, tomorrow);
-    
-    if (bdeId) {
-      reports = reports.filter(report => report.bdeId === bdeId);
-    }
-    
-    return reports.length;
-  }
-  
-  async getAllVisitReports(): Promise<VisitReport[]> {
-    return Array.from(this.visitReportsMap.values());
-  }
-  
-  // Product methods
-  async createProduct(product: InsertProduct): Promise<Product> {
-    const id = this.currentProductId++;
-    const newProduct: Product = {
-      ...product,
-      id,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.productsMap.set(id, newProduct);
-    return newProduct;
-  }
-  
-  async getProductById(id: number): Promise<Product | undefined> {
-    return this.productsMap.get(id);
-  }
-  
-  async getAllProducts(): Promise<Product[]> {
-    return Array.from(this.productsMap.values());
-  }
-  
-  async updateProduct(id: number, product: Partial<InsertProduct>): Promise<Product | undefined> {
-    const existingProduct = this.productsMap.get(id);
-    if (!existingProduct) return undefined;
-    
-    const updatedProduct: Product = {
-      ...existingProduct,
-      ...product,
-      updatedAt: new Date()
-    };
-    
-    this.productsMap.set(id, updatedProduct);
-    return updatedProduct;
-  }
-  
-  async deleteProduct(id: number): Promise<boolean> {
-    return this.productsMap.delete(id);
-  }
-  
-  // Sales Report methods
-  async createSalesReport(report: InsertSalesReport): Promise<SalesReport> {
-    const id = this.currentSalesReportId++;
-    
-    // Get product to calculate points
-    const product = await this.getProductById(report.productId);
-    if (!product) {
-      throw new Error("Product not found");
-    }
-    
-    const newReport: SalesReport = {
-      ...report,
-      id,
-      status: "pending",
-      approvedBy: null,
-      approvedAt: null,
-      points: product.points,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.salesReportsMap.set(id, newReport);
-    return newReport;
-  }
-  
-  async getSalesReportById(id: number): Promise<SalesReport | undefined> {
-    return this.salesReportsMap.get(id);
-  }
-  
-  async getSalesReportsByBdeId(bdeId: number): Promise<SalesReport[]> {
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => report.bdeId === bdeId
-    );
-  }
-  
-  async getSalesReportsByBdmId(bdmId: number): Promise<SalesReport[]> {
-    // Get all BDEs under this BDM
-    const bdes = await this.getUsersByBDM(bdmId);
-    const bdeIds = bdes.map(bde => bde.id);
-    
-    // Get all reports from these BDEs
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => bdeIds.includes(report.bdeId)
-    );
-  }
-  
-  async getSalesReportsByManagerId(managerId: number): Promise<SalesReport[]> {
-    // Get all employees under this manager
-    const directEmployees = await this.getUsersByManager(managerId);
-    
-    // Get BDMs under this manager
-    const bdms = directEmployees.filter(emp => emp.userType === USER_ROLES.BDM);
-    
-    // Get BDEs directly under this manager
-    const directBDEs = directEmployees.filter(emp => emp.userType === USER_ROLES.BDE);
-    
-    // Get BDEs under BDMs
-    let allBDEs = [...directBDEs];
-    
-    for (const bdm of bdms) {
-      const bdesUnderBdm = await this.getUsersByBDM(bdm.id);
-      allBDEs = [...allBDEs, ...bdesUnderBdm];
-    }
-    
-    // Get all BDE IDs
-    const bdeIds = allBDEs.map(bde => bde.id);
-    
-    // Get all reports from these BDEs
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => bdeIds.includes(report.bdeId)
-    );
-  }
-  
-  async getSalesReportsByDateRange(startDate: Date, endDate: Date): Promise<SalesReport[]> {
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => {
-        const reportDate = new Date(report.createdAt);
-        return reportDate >= start && reportDate <= end;
-      }
-    );
-  }
-  
-  async getSalesByLocation(location: string): Promise<SalesReport[]> {
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => report.location.toLowerCase().includes(location.toLowerCase())
-    );
-  }
-  
-  async getTodaySalesPoints(bdeId?: number): Promise<number> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const endOfDay = new Date(today);
-    endOfDay.setHours(23, 59, 59, 999);
-    
-    const todayReports = Array.from(this.salesReportsMap.values()).filter(
-      report => {
-        if (bdeId && report.bdeId !== bdeId) return false;
-        
-        const reportDate = new Date(report.createdAt);
-        return reportDate >= today && reportDate <= endOfDay && report.status === "approved";
-      }
-    );
-    
-    return todayReports.reduce((total, report) => total + (report.points || 0), 0);
-  }
-  
-  async getCurrentMonthSalesPoints(bdeId?: number): Promise<number> {
-    const now = new Date();
-    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-    
-    const monthReports = Array.from(this.salesReportsMap.values()).filter(
-      report => {
-        if (bdeId && report.bdeId !== bdeId) return false;
-        
-        const reportDate = new Date(report.createdAt);
-        return reportDate >= firstDayOfMonth && reportDate <= lastDayOfMonth && report.status === "approved";
-      }
-    );
-    
-    return monthReports.reduce((total, report) => total + (report.points || 0), 0);
-  }
-  
-  async getSalesByMonth(year: number, month: number, bdeId?: number): Promise<SalesReport[]> {
-    const firstDayOfMonth = new Date(year, month - 1, 1);
-    const lastDayOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
-    
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => {
-        if (bdeId && report.bdeId !== bdeId) return false;
-        
-        const reportDate = new Date(report.createdAt);
-        return reportDate >= firstDayOfMonth && reportDate <= lastDayOfMonth;
-      }
-    );
-  }
-  
-  async getPendingSalesReports(): Promise<SalesReport[]> {
-    return Array.from(this.salesReportsMap.values()).filter(
-      report => report.status === "pending"
-    );
-  }
-  
-  async approveSalesReport(id: number, adminId: number): Promise<SalesReport | undefined> {
-    const report = this.salesReportsMap.get(id);
-    if (!report) return undefined;
-    
-    // Check if admin exists
-    const admin = await this.getUser(adminId);
-    if (!admin || admin.userType !== USER_ROLES.ADMIN) {
-      throw new Error("Only admins can approve sales reports");
-    }
-    
-    const updatedReport: SalesReport = {
-      ...report,
-      status: "approved",
-      approvedBy: adminId,
-      approvedAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.salesReportsMap.set(id, updatedReport);
-    return updatedReport;
-  }
-  
-  async getAllSalesReports(): Promise<SalesReport[]> {
-    return Array.from(this.salesReportsMap.values());
   }
 
-  // Verification Report Methods
+  // Attendance methods
+  async recordLogin(employeeId: number): Promise<AttendanceRecord> {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Check if there's already a login record for today
+      const [existingRecord] = await db
+        .select()
+        .from(attendanceRecords)
+        .where(
+          and(
+            eq(attendanceRecords.employeeId, employeeId),
+            eq(attendanceRecords.date, today)
+          )
+        );
+
+      if (existingRecord) {
+        return existingRecord;
+      }
+
+      // Create a new login record
+      const [newRecord] = await db
+        .insert(attendanceRecords)
+        .values({
+          employeeId,
+          date: today,
+          loginTime: new Date()
+        })
+        .returning();
+
+      return newRecord;
+    } catch (error) {
+      console.error("Error recording login:", error);
+      throw error;
+    }
+  }
+
+  async recordLogout(employeeId: number): Promise<AttendanceRecord | undefined> {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Find today's attendance record
+      const [record] = await db
+        .select()
+        .from(attendanceRecords)
+        .where(
+          and(
+            eq(attendanceRecords.employeeId, employeeId),
+            eq(attendanceRecords.date, today)
+          )
+        );
+
+      if (!record) {
+        return undefined;
+      }
+
+      // Update with logout time
+      const [updatedRecord] = await db
+        .update(attendanceRecords)
+        .set({
+          logoutTime: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(attendanceRecords.id, record.id))
+        .returning();
+
+      return updatedRecord;
+    } catch (error) {
+      console.error("Error recording logout:", error);
+      throw error;
+    }
+  }
+
+  async getAttendanceByDate(date: Date): Promise<AttendanceRecord[]> {
+    try {
+      return await db
+        .select()
+        .from(attendanceRecords)
+        .where(eq(attendanceRecords.date, date));
+    } catch (error) {
+      console.error("Error getting attendance by date:", error);
+      throw error;
+    }
+  }
+
+  async getAttendanceByEmployeeId(employeeId: number): Promise<AttendanceRecord[]> {
+    try {
+      return await db
+        .select()
+        .from(attendanceRecords)
+        .where(eq(attendanceRecords.employeeId, employeeId));
+    } catch (error) {
+      console.error("Error getting attendance by employee ID:", error);
+      throw error;
+    }
+  }
+
+  async getAttendanceByDateRange(startDate: Date, endDate: Date): Promise<AttendanceRecord[]> {
+    try {
+      return await db
+        .select()
+        .from(attendanceRecords)
+        .where(
+          and(
+            gte(attendanceRecords.date, startDate),
+            lte(attendanceRecords.date, endDate)
+          )
+        );
+    } catch (error) {
+      console.error("Error getting attendance by date range:", error);
+      throw error;
+    }
+  }
+
+  async getAttendanceByManagerId(managerId: number, date?: Date): Promise<AttendanceRecord[]> {
+    try {
+      // Get all employees under this manager
+      const managedEmployees = await this.getUsersByManager(managerId);
+      if (!managedEmployees.length) return [];
+
+      const employeeIds = managedEmployees.map(emp => emp.id);
+
+      let query = db
+        .select()
+        .from(attendanceRecords)
+        .where(inArray(attendanceRecords.employeeId, employeeIds));
+
+      if (date) {
+        query = query.where(eq(attendanceRecords.date, date));
+      }
+
+      return await query;
+    } catch (error) {
+      console.error("Error getting attendance by manager ID:", error);
+      throw error;
+    }
+  }
+
+  async getAttendanceByBDMId(bdmId: number, date?: Date): Promise<AttendanceRecord[]> {
+    try {
+      // Get all BDEs under this BDM
+      const bdes = await this.getUsersByBDM(bdmId);
+      if (!bdes.length) return [];
+
+      const bdeIds = bdes.map(bde => bde.id);
+
+      let query = db
+        .select()
+        .from(attendanceRecords)
+        .where(inArray(attendanceRecords.employeeId, bdeIds));
+
+      if (date) {
+        query = query.where(eq(attendanceRecords.date, date));
+      }
+
+      return await query;
+    } catch (error) {
+      console.error("Error getting attendance by BDM ID:", error);
+      throw error;
+    }
+  }
+
+  async getAttendanceForToday(): Promise<AttendanceRecord[]> {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      return await db
+        .select()
+        .from(attendanceRecords)
+        .where(eq(attendanceRecords.date, today));
+    } catch (error) {
+      console.error("Error getting attendance for today:", error);
+      throw error;
+    }
+  }
+
+  // Visit Reports methods
+  async createVisitReport(report: InsertVisitReport): Promise<VisitReport> {
+    try {
+      const [newReport] = await db
+        .insert(visitReports)
+        .values(report)
+        .returning();
+      return newReport;
+    } catch (error) {
+      console.error("Error creating visit report:", error);
+      throw error;
+    }
+  }
+
+  async getVisitReportById(id: number): Promise<VisitReport | undefined> {
+    try {
+      const [report] = await db
+        .select()
+        .from(visitReports)
+        .where(eq(visitReports.id, id));
+      return report;
+    } catch (error) {
+      console.error("Error getting visit report by ID:", error);
+      throw error;
+    }
+  }
+
+  async getVisitReportsByBdeId(bdeId: number): Promise<VisitReport[]> {
+    try {
+      return await db
+        .select()
+        .from(visitReports)
+        .where(eq(visitReports.bdeId, bdeId));
+    } catch (error) {
+      console.error("Error getting visit reports by BDE ID:", error);
+      throw error;
+    }
+  }
+
+  async getVisitReportsByBdmId(bdmId: number): Promise<VisitReport[]> {
+    try {
+      // Get all BDEs under this BDM
+      const bdes = await this.getUsersByBDM(bdmId);
+      if (!bdes.length) return [];
+
+      const bdeIds = bdes.map(bde => bde.id);
+
+      return await db
+        .select()
+        .from(visitReports)
+        .where(inArray(visitReports.bdeId, bdeIds));
+    } catch (error) {
+      console.error("Error getting visit reports by BDM ID:", error);
+      throw error;
+    }
+  }
+
+  async getVisitReportsByManagerId(managerId: number): Promise<VisitReport[]> {
+    try {
+      // Get all BDEs directly under this manager
+      const directBdes = await this.getUsersByManager(managerId);
+      
+      // Get all BDMs under this manager
+      const bdms = directBdes.filter(emp => emp.userType === USER_ROLES.BDM);
+      
+      // Get all BDEs under these BDMs
+      const bdesUnderBdm = await Promise.all(
+        bdms.map(bdm => this.getUsersByBDM(bdm.id))
+      );
+      
+      // Combine all BDEs (direct and under BDMs)
+      const allBdes = [
+        ...directBdes.filter(emp => emp.userType === USER_ROLES.BDE),
+        ...bdesUnderBdm.flat()
+      ];
+      
+      if (!allBdes.length) return [];
+      
+      const bdeIds = allBdes.map(bde => bde.id);
+      
+      return await db
+        .select()
+        .from(visitReports)
+        .where(inArray(visitReports.bdeId, bdeIds));
+    } catch (error) {
+      console.error("Error getting visit reports by manager ID:", error);
+      throw error;
+    }
+  }
+
+  async getVisitReportsByDateRange(startDate: Date, endDate: Date): Promise<VisitReport[]> {
+    try {
+      return await db
+        .select()
+        .from(visitReports)
+        .where(
+          and(
+            gte(visitReports.createdAt, startDate),
+            lte(visitReports.createdAt, endDate)
+          )
+        );
+    } catch (error) {
+      console.error("Error getting visit reports by date range:", error);
+      throw error;
+    }
+  }
+
+  async getVisitReportsByLocation(location: string): Promise<VisitReport[]> {
+    try {
+      return await db
+        .select()
+        .from(visitReports)
+        .where(ilike(visitReports.location, `%${location}%`));
+    } catch (error) {
+      console.error("Error getting visit reports by location:", error);
+      throw error;
+    }
+  }
+
+  async getTodayVisitReportCount(bdeId?: number): Promise<number> {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      let query = db
+        .select({ count: sql<number>`count(*)` })
+        .from(visitReports)
+        .where(
+          and(
+            gte(visitReports.createdAt, today),
+            lt(visitReports.createdAt, tomorrow)
+          )
+        );
+
+      if (bdeId) {
+        query = query.where(eq(visitReports.bdeId, bdeId));
+      }
+
+      const [result] = await query;
+      return result?.count || 0;
+    } catch (error) {
+      console.error("Error getting today's visit report count:", error);
+      throw error;
+    }
+  }
+
+  async getAllVisitReports(): Promise<VisitReport[]> {
+    try {
+      return await db
+        .select()
+        .from(visitReports);
+    } catch (error) {
+      console.error("Error getting all visit reports:", error);
+      throw error;
+    }
+  }
+
+  // Product methods
+  async createProduct(product: InsertProduct): Promise<Product> {
+    try {
+      const [newProduct] = await db
+        .insert(products)
+        .values(product)
+        .returning();
+      return newProduct;
+    } catch (error) {
+      console.error("Error creating product:", error);
+      throw error;
+    }
+  }
+
+  async getProductById(id: number): Promise<Product | undefined> {
+    try {
+      const [product] = await db
+        .select()
+        .from(products)
+        .where(eq(products.id, id));
+      return product;
+    } catch (error) {
+      console.error("Error getting product by ID:", error);
+      throw error;
+    }
+  }
+
+  async getAllProducts(): Promise<Product[]> {
+    try {
+      return await db
+        .select()
+        .from(products);
+    } catch (error) {
+      console.error("Error getting all products:", error);
+      throw error;
+    }
+  }
+
+  async updateProduct(id: number, productData: Partial<InsertProduct>): Promise<Product | undefined> {
+    try {
+      const [updatedProduct] = await db
+        .update(products)
+        .set({
+          ...productData,
+          updatedAt: new Date()
+        })
+        .where(eq(products.id, id))
+        .returning();
+      return updatedProduct;
+    } catch (error) {
+      console.error("Error updating product:", error);
+      throw error;
+    }
+  }
+
+  async deleteProduct(id: number): Promise<boolean> {
+    try {
+      await db
+        .delete(products)
+        .where(eq(products.id, id));
+      return true;
+    } catch (error) {
+      console.error("Error deleting product:", error);
+      throw error;
+    }
+  }
+
+  // Sales Report methods
+  async createSalesReport(report: InsertSalesReport): Promise<SalesReport> {
+    try {
+      // Get product points
+      const product = await this.getProductById(report.productId);
+      
+      const [newReport] = await db
+        .insert(salesReports)
+        .values({
+          ...report,
+          status: "pending",
+          points: product?.points || 0,
+        })
+        .returning();
+      return newReport;
+    } catch (error) {
+      console.error("Error creating sales report:", error);
+      throw error;
+    }
+  }
+
+  async getSalesReportById(id: number): Promise<SalesReport | undefined> {
+    try {
+      const [report] = await db
+        .select()
+        .from(salesReports)
+        .where(eq(salesReports.id, id));
+      return report;
+    } catch (error) {
+      console.error("Error getting sales report by ID:", error);
+      throw error;
+    }
+  }
+
+  async getSalesReportsByBdeId(bdeId: number): Promise<SalesReport[]> {
+    try {
+      return await db
+        .select()
+        .from(salesReports)
+        .where(eq(salesReports.bdeId, bdeId));
+    } catch (error) {
+      console.error("Error getting sales reports by BDE ID:", error);
+      throw error;
+    }
+  }
+
+  async getSalesReportsByBdmId(bdmId: number): Promise<SalesReport[]> {
+    try {
+      // Get all BDEs under this BDM
+      const bdes = await this.getUsersByBDM(bdmId);
+      if (!bdes.length) return [];
+
+      const bdeIds = bdes.map(bde => bde.id);
+
+      return await db
+        .select()
+        .from(salesReports)
+        .where(inArray(salesReports.bdeId, bdeIds));
+    } catch (error) {
+      console.error("Error getting sales reports by BDM ID:", error);
+      throw error;
+    }
+  }
+
+  async getSalesReportsByManagerId(managerId: number): Promise<SalesReport[]> {
+    try {
+      // Get all BDEs directly under this manager
+      const directBdes = await this.getUsersByManager(managerId);
+      
+      // Get all BDMs under this manager
+      const bdms = directBdes.filter(emp => emp.userType === USER_ROLES.BDM);
+      
+      // Get all BDEs under these BDMs
+      const bdesUnderBdm = await Promise.all(
+        bdms.map(bdm => this.getUsersByBDM(bdm.id))
+      );
+      
+      // Combine all BDEs (direct and under BDMs)
+      const allBdes = [
+        ...directBdes.filter(emp => emp.userType === USER_ROLES.BDE),
+        ...bdesUnderBdm.flat()
+      ];
+      
+      if (!allBdes.length) return [];
+      
+      const bdeIds = allBdes.map(bde => bde.id);
+      
+      return await db
+        .select()
+        .from(salesReports)
+        .where(inArray(salesReports.bdeId, bdeIds));
+    } catch (error) {
+      console.error("Error getting sales reports by manager ID:", error);
+      throw error;
+    }
+  }
+
+  async getSalesReportsByDateRange(startDate: Date, endDate: Date): Promise<SalesReport[]> {
+    try {
+      return await db
+        .select()
+        .from(salesReports)
+        .where(
+          and(
+            gte(salesReports.createdAt, startDate),
+            lte(salesReports.createdAt, endDate)
+          )
+        );
+    } catch (error) {
+      console.error("Error getting sales reports by date range:", error);
+      throw error;
+    }
+  }
+
+  async getSalesByLocation(location: string): Promise<SalesReport[]> {
+    try {
+      return await db
+        .select()
+        .from(salesReports)
+        .where(ilike(salesReports.location, `%${location}%`));
+    } catch (error) {
+      console.error("Error getting sales by location:", error);
+      throw error;
+    }
+  }
+
+  async getTodaySalesPoints(bdeId?: number): Promise<number> {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      let query = db
+        .select({ sum: sql<number>`sum(points)` })
+        .from(salesReports)
+        .where(
+          and(
+            gte(salesReports.createdAt, today),
+            lt(salesReports.createdAt, tomorrow),
+            eq(salesReports.status, "approved")
+          )
+        );
+
+      if (bdeId) {
+        query = query.where(eq(salesReports.bdeId, bdeId));
+      }
+
+      const [result] = await query;
+      return result?.sum || 0;
+    } catch (error) {
+      console.error("Error getting today's sales points:", error);
+      throw error;
+    }
+  }
+
+  async getCurrentMonthSalesPoints(bdeId?: number): Promise<number> {
+    try {
+      const now = new Date();
+      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const firstDayOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+      let query = db
+        .select({ sum: sql<number>`sum(points)` })
+        .from(salesReports)
+        .where(
+          and(
+            gte(salesReports.createdAt, firstDayOfMonth),
+            lt(salesReports.createdAt, firstDayOfNextMonth),
+            eq(salesReports.status, "approved")
+          )
+        );
+
+      if (bdeId) {
+        query = query.where(eq(salesReports.bdeId, bdeId));
+      }
+
+      const [result] = await query;
+      return result?.sum || 0;
+    } catch (error) {
+      console.error("Error getting current month sales points:", error);
+      throw error;
+    }
+  }
+
+  async getSalesByMonth(year: number, month: number, bdeId?: number): Promise<SalesReport[]> {
+    try {
+      const firstDayOfMonth = new Date(year, month - 1, 1);
+      const firstDayOfNextMonth = new Date(year, month, 1);
+
+      let query = db
+        .select()
+        .from(salesReports)
+        .where(
+          and(
+            gte(salesReports.createdAt, firstDayOfMonth),
+            lt(salesReports.createdAt, firstDayOfNextMonth)
+          )
+        );
+
+      if (bdeId) {
+        query = query.where(eq(salesReports.bdeId, bdeId));
+      }
+
+      return await query;
+    } catch (error) {
+      console.error("Error getting sales by month:", error);
+      throw error;
+    }
+  }
+
+  async getPendingSalesReports(): Promise<SalesReport[]> {
+    try {
+      return await db
+        .select()
+        .from(salesReports)
+        .where(eq(salesReports.status, "pending"));
+    } catch (error) {
+      console.error("Error getting pending sales reports:", error);
+      throw error;
+    }
+  }
+
+  async approveSalesReport(id: number, adminId: number): Promise<SalesReport | undefined> {
+    try {
+      const [updatedReport] = await db
+        .update(salesReports)
+        .set({
+          status: "approved",
+          approvedBy: adminId,
+          approvedAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(salesReports.id, id))
+        .returning();
+      return updatedReport;
+    } catch (error) {
+      console.error("Error approving sales report:", error);
+      throw error;
+    }
+  }
+
+  async getAllSalesReports(): Promise<SalesReport[]> {
+    try {
+      return await db
+        .select()
+        .from(salesReports);
+    } catch (error) {
+      console.error("Error getting all sales reports:", error);
+      throw error;
+    }
+  }
+
+  // Verification Report methods
   async createVerificationReport(report: InsertVerificationReport): Promise<VerificationReport> {
-    const id = this.currentVerificationReportId++;
-    const newReport: VerificationReport = {
-      ...report,
-      id,
-      status: VERIFICATION_STATUSES.PENDING,
-      approvedBy: null,
-      approvedAt: null,
-      rejectedBy: null,
-      rejectedAt: null,
-      rejectionReason: null,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.verificationReportsMap.set(id, newReport);
-    return newReport;
+    try {
+      const [newReport] = await db
+        .insert(verificationReports)
+        .values({
+          ...report,
+          status: VERIFICATION_STATUSES.PENDING
+        })
+        .returning();
+      return newReport;
+    } catch (error) {
+      console.error("Error creating verification report:", error);
+      throw error;
+    }
   }
   
   async getVerificationReportById(id: number): Promise<VerificationReport | undefined> {
-    return this.verificationReportsMap.get(id);
+    try {
+      const [report] = await db
+        .select()
+        .from(verificationReports)
+        .where(eq(verificationReports.id, id));
+      return report;
+    } catch (error) {
+      console.error("Error getting verification report by ID:", error);
+      throw error;
+    }
   }
   
   async getVerificationReportsByBdeId(bdeId: number): Promise<VerificationReport[]> {
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => report.bdeId === bdeId);
+    try {
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(eq(verificationReports.bdeId, bdeId));
+    } catch (error) {
+      console.error("Error getting verification reports by BDE ID:", error);
+      throw error;
+    }
   }
   
   async getVerificationReportsByBdmId(bdmId: number): Promise<VerificationReport[]> {
-    // Get BDEs under this BDM
-    const bdes = await this.getUsersByBDM(bdmId);
-    const bdeIds = bdes.map(bde => bde.id);
-    
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => bdeIds.includes(report.bdeId));
+    try {
+      // Get all BDEs under this BDM
+      const bdes = await this.getUsersByBDM(bdmId);
+      if (!bdes.length) return [];
+      
+      const bdeIds = bdes.map(bde => bde.id);
+      
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(inArray(verificationReports.bdeId, bdeIds));
+    } catch (error) {
+      console.error("Error getting verification reports by BDM ID:", error);
+      throw error;
+    }
   }
   
   async getVerificationReportsByManagerId(managerId: number): Promise<VerificationReport[]> {
-    // Get all employees under this manager
-    const directEmployees = await this.getUsersByManager(managerId);
-    
-    // Get BDMs under this manager
-    const bdms = directEmployees.filter(emp => emp.userType === USER_ROLES.BDM);
-    
-    // Get BDEs directly under this manager
-    const directBDEs = directEmployees.filter(emp => emp.userType === USER_ROLES.BDE);
-    
-    // Get BDEs under BDMs
-    let allBDEs = [...directBDEs];
-    
-    for (const bdm of bdms) {
-      const bdesUnderBdm = await this.getUsersByBDM(bdm.id);
-      allBDEs = [...allBDEs, ...bdesUnderBdm];
+    try {
+      // Get all BDMs under this manager
+      const bdms = await this.getUsersByManager(managerId);
+      
+      // Get all BDEs directly under this manager and under the BDMs
+      const directBdes = await this.getUsersByManager(managerId);
+      const bdesByBdm = await Promise.all(
+        bdms.map(bdm => this.getUsersByBDM(bdm.id))
+      );
+      
+      // Flatten the arrays and filter for BDEs
+      const allBdes = [
+        ...directBdes.filter(user => user.userType === USER_ROLES.BDE),
+        ...bdesByBdm.flat()
+      ];
+      
+      if (!allBdes.length) return [];
+      
+      const bdeIds = allBdes.map(bde => bde.id);
+      
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(inArray(verificationReports.bdeId, bdeIds));
+    } catch (error) {
+      console.error("Error getting verification reports by Manager ID:", error);
+      throw error;
     }
-    
-    // Get all BDE IDs
-    const bdeIds = allBDEs.map(bde => bde.id);
-    
-    // Get all reports from these BDEs
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => bdeIds.includes(report.bdeId));
   }
   
   async getVerificationReportsByDateRange(startDate: Date, endDate: Date): Promise<VerificationReport[]> {
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => {
-        const reportDate = new Date(report.createdAt);
-        return reportDate >= start && reportDate <= end;
-      });
+    try {
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(
+          and(
+            gte(verificationReports.createdAt, startDate),
+            lte(verificationReports.createdAt, endDate)
+          )
+        );
+    } catch (error) {
+      console.error("Error getting verification reports by date range:", error);
+      throw error;
+    }
   }
   
   async searchVerificationReports(query: string): Promise<VerificationReport[]> {
-    if (!query) return this.getAllVerificationReports();
-    
-    const lowercaseQuery = query.toLowerCase();
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => 
-        report.merchantName.toLowerCase().includes(lowercaseQuery) ||
-        report.mobileNumber.toLowerCase().includes(lowercaseQuery) ||
-        report.businessName.toLowerCase().includes(lowercaseQuery) ||
-        report.fullAddress.toLowerCase().includes(lowercaseQuery)
-      );
+    try {
+      const lowerQuery = query.toLowerCase();
+      
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(
+          or(
+            ilike(verificationReports.merchantName, `%${lowerQuery}%`),
+            ilike(verificationReports.mobileNumber, `%${lowerQuery}%`),
+            ilike(verificationReports.businessName, `%${lowerQuery}%`),
+            ilike(verificationReports.fullAddress, `%${lowerQuery}%`)
+          )
+        );
+    } catch (error) {
+      console.error("Error searching verification reports:", error);
+      throw error;
+    }
   }
   
   async getVerificationReportsByStatus(status: string): Promise<VerificationReport[]> {
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => report.status === status);
+    try {
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(eq(verificationReports.status, status));
+    } catch (error) {
+      console.error("Error getting verification reports by status:", error);
+      throw error;
+    }
   }
   
   async getPendingVerificationReports(): Promise<VerificationReport[]> {
-    return Array.from(this.verificationReportsMap.values())
-      .filter(report => report.status === VERIFICATION_STATUSES.PENDING);
+    try {
+      return await db
+        .select()
+        .from(verificationReports)
+        .where(eq(verificationReports.status, VERIFICATION_STATUSES.PENDING));
+    } catch (error) {
+      console.error("Error getting pending verification reports:", error);
+      throw error;
+    }
   }
   
   async approveVerificationReport(id: number, adminId: number): Promise<VerificationReport | undefined> {
-    const report = this.verificationReportsMap.get(id);
-    if (!report) return undefined;
-    
-    // Check if admin exists
-    const admin = await this.getUser(adminId);
-    if (!admin || admin.userType !== USER_ROLES.ADMIN) {
-      throw new Error("Only admins can approve verification reports");
+    try {
+      const [updatedReport] = await db
+        .update(verificationReports)
+        .set({
+          status: VERIFICATION_STATUSES.APPROVED,
+          approvedBy: adminId,
+          approvedAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(verificationReports.id, id))
+        .returning();
+      
+      return updatedReport;
+    } catch (error) {
+      console.error("Error approving verification report:", error);
+      throw error;
     }
-    
-    const updatedReport: VerificationReport = {
-      ...report,
-      status: VERIFICATION_STATUSES.APPROVED,
-      approvedBy: adminId,
-      approvedAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    this.verificationReportsMap.set(id, updatedReport);
-    return updatedReport;
   }
   
   async rejectVerificationReport(id: number, adminId: number, reason: string): Promise<VerificationReport | undefined> {
-    const report = this.verificationReportsMap.get(id);
-    if (!report) return undefined;
-    
-    // Check if admin exists
-    const admin = await this.getUser(adminId);
-    if (!admin || admin.userType !== USER_ROLES.ADMIN) {
-      throw new Error("Only admins can reject verification reports");
+    try {
+      const [updatedReport] = await db
+        .update(verificationReports)
+        .set({
+          status: VERIFICATION_STATUSES.REJECTED,
+          rejectedBy: adminId,
+          rejectedAt: new Date(),
+          rejectionReason: reason,
+          updatedAt: new Date()
+        })
+        .where(eq(verificationReports.id, id))
+        .returning();
+      
+      return updatedReport;
+    } catch (error) {
+      console.error("Error rejecting verification report:", error);
+      throw error;
     }
-    
-    const updatedReport: VerificationReport = {
-      ...report,
-      status: VERIFICATION_STATUSES.REJECTED,
-      rejectedBy: adminId,
-      rejectedAt: new Date(),
-      rejectionReason: reason,
-      updatedAt: new Date()
-    };
-    
-    this.verificationReportsMap.set(id, updatedReport);
-    return updatedReport;
   }
   
   async getAllVerificationReports(): Promise<VerificationReport[]> {
-    return Array.from(this.verificationReportsMap.values());
+    try {
+      return await db
+        .select()
+        .from(verificationReports);
+    } catch (error) {
+      console.error("Error getting all verification reports:", error);
+      throw error;
+    }
   }
   
   // Employee Documents methods
   async createEmployeeDocument(document: InsertEmployeeDocument): Promise<EmployeeDocument> {
-    const id = this.currentEmployeeDocumentId++;
-    const newDocument: EmployeeDocument = {
-      ...document,
-      id,
-      uploadedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.employeeDocumentsMap.set(id, newDocument);
-    return newDocument;
+    try {
+      const [newDocument] = await db
+        .insert(employeeDocuments)
+        .values(document)
+        .returning();
+      return newDocument;
+    } catch (error) {
+      console.error("Error creating employee document:", error);
+      throw error;
+    }
   }
   
   async getEmployeeDocumentById(id: number): Promise<EmployeeDocument | undefined> {
-    return this.employeeDocumentsMap.get(id);
+    try {
+      const [document] = await db
+        .select()
+        .from(employeeDocuments)
+        .where(eq(employeeDocuments.id, id));
+      return document;
+    } catch (error) {
+      console.error("Error getting employee document by ID:", error);
+      throw error;
+    }
   }
   
   async getEmployeeDocumentsByEmployeeId(employeeId: number): Promise<EmployeeDocument[]> {
-    return Array.from(this.employeeDocumentsMap.values()).filter(
-      doc => doc.employeeId === employeeId
-    );
+    try {
+      return await db
+        .select()
+        .from(employeeDocuments)
+        .where(eq(employeeDocuments.employeeId, employeeId));
+    } catch (error) {
+      console.error("Error getting employee documents by employee ID:", error);
+      throw error;
+    }
   }
   
   async getEmployeeDocumentsByType(employeeId: number, documentType: string): Promise<EmployeeDocument[]> {
-    return Array.from(this.employeeDocumentsMap.values()).filter(
-      doc => doc.employeeId === employeeId && doc.documentType === documentType
-    );
+    try {
+      return await db
+        .select()
+        .from(employeeDocuments)
+        .where(
+          and(
+            eq(employeeDocuments.employeeId, employeeId),
+            eq(employeeDocuments.documentType, documentType)
+          )
+        );
+    } catch (error) {
+      console.error("Error getting employee documents by type:", error);
+      throw error;
+    }
   }
   
   async getPayslipsByMonth(employeeId: number, month: string): Promise<EmployeeDocument | undefined> {
-    return Array.from(this.employeeDocumentsMap.values()).find(
-      doc => doc.employeeId === employeeId && 
-             doc.documentType === DOCUMENT_TYPES.PAYSLIP && 
-             doc.month === month
-    );
+    try {
+      const [document] = await db
+        .select()
+        .from(employeeDocuments)
+        .where(
+          and(
+            eq(employeeDocuments.employeeId, employeeId),
+            eq(employeeDocuments.documentType, DOCUMENT_TYPES.PAYSLIP),
+            eq(employeeDocuments.month, month)
+          )
+        );
+      return document;
+    } catch (error) {
+      console.error("Error getting payslip by month:", error);
+      throw error;
+    }
   }
   
   async getOfferLetter(employeeId: number): Promise<EmployeeDocument | undefined> {
-    return Array.from(this.employeeDocumentsMap.values()).find(
-      doc => doc.employeeId === employeeId && doc.documentType === DOCUMENT_TYPES.OFFER_LETTER
-    );
+    try {
+      const [document] = await db
+        .select()
+        .from(employeeDocuments)
+        .where(
+          and(
+            eq(employeeDocuments.employeeId, employeeId),
+            eq(employeeDocuments.documentType, DOCUMENT_TYPES.OFFER_LETTER)
+          )
+        );
+      return document;
+    } catch (error) {
+      console.error("Error getting offer letter:", error);
+      throw error;
+    }
   }
   
   async getAllEmployeeDocuments(): Promise<EmployeeDocument[]> {
-    return Array.from(this.employeeDocumentsMap.values());
+    try {
+      return await db
+        .select()
+        .from(employeeDocuments);
+    } catch (error) {
+      console.error("Error getting all employee documents:", error);
+      throw error;
+    }
   }
   
   async deleteEmployeeDocument(id: number): Promise<boolean> {
-    return this.employeeDocumentsMap.delete(id);
+    try {
+      await db
+        .delete(employeeDocuments)
+        .where(eq(employeeDocuments.id, id));
+      return true;
+    } catch (error) {
+      console.error("Error deleting employee document:", error);
+      throw error;
+    }
   }
   
   async searchEmployees(query: string): Promise<Employee[]> {
-    const lowercaseQuery = query.toLowerCase();
-    return Array.from(this.users.values()).filter(
-      user => 
-        user.name.toLowerCase().includes(lowercaseQuery) || 
-        user.employeeId.toLowerCase().includes(lowercaseQuery) || 
-        user.mobile.toLowerCase().includes(lowercaseQuery)
-    );
+    try {
+      const lowerQuery = query.toLowerCase();
+      return await db
+        .select()
+        .from(employees)
+        .where(
+          or(
+            ilike(employees.name, `%${lowerQuery}%`),
+            ilike(employees.mobile, `%${lowerQuery}%`),
+            ilike(employees.username, `%${lowerQuery}%`),
+            ilike(employees.employeeId, `%${lowerQuery}%`)
+          )
+        );
+    } catch (error) {
+      console.error("Error searching employees:", error);
+      throw error;
+    }
   }
 }
 
-export const storage = new MemStorage();
+// Use the DatabaseStorage implementation instead of MemStorage
+export const storage = new DatabaseStorage();
