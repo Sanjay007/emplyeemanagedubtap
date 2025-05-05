@@ -56,11 +56,9 @@ app.use((req, res, next) => {
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
   if (app.get("env") === "development") {
-    console.log("Setting up Vite Dev...");
     await setupVite(app, server);
   } else {
-    console.log("Setting up Vite Static...");
-    await setupVite(app, server);
+    serveStatic(app);
   }
 
   // ALWAYS serve the app on port 5000

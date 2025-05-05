@@ -7,6 +7,18 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+// Helper function to convert a file to base64 string
+export const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve(reader.result as string);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
 export async function apiRequest(
   url: string,
   options?: RequestInit

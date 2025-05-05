@@ -720,7 +720,7 @@ export class DatabaseStorage implements IStorage {
         .where(
           and(
             gte(visitReports.createdAt, today),
-            lt(visitReports.createdAt, tomorrow)
+            lte(visitReports.createdAt, tomorrow)
           )
         );
 
@@ -953,7 +953,7 @@ export class DatabaseStorage implements IStorage {
         .where(
           and(
             gte(salesReports.createdAt, today),
-            lt(salesReports.createdAt, tomorrow),
+            lte(salesReports.createdAt, tomorrow),
             eq(salesReports.status, "approved")
           )
         );
@@ -982,7 +982,7 @@ export class DatabaseStorage implements IStorage {
         .where(
           and(
             gte(salesReports.createdAt, firstDayOfMonth),
-            lt(salesReports.createdAt, firstDayOfNextMonth),
+            lte(salesReports.createdAt, firstDayOfNextMonth),
             eq(salesReports.status, "approved")
           )
         );
@@ -1010,7 +1010,7 @@ export class DatabaseStorage implements IStorage {
         .where(
           and(
             gte(salesReports.createdAt, firstDayOfMonth),
-            lt(salesReports.createdAt, firstDayOfNextMonth)
+            lte(salesReports.createdAt, firstDayOfNextMonth)
           )
         );
 

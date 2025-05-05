@@ -28,7 +28,7 @@ ENV PORT=5000
 EXPOSE 5000
 
 # Set the entrypoint script
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+#ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Start the application
 CMD ["npm", "run", "start"]
